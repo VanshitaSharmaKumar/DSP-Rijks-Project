@@ -74,81 +74,7 @@ def load_metadata_df():
 def load_features_array():
     return np.load("./DATA/final_features.npy")
 
-def _to_set(value) -> set:
-    """Turn a metadata cell into a set of tokens (robust to NaN, lists, etc.)."""
-    if value is None:
-        return set()
-    if isinstance(value, float) and np.isnan(value):
-        return set()
-    if isinstance(value, list):
-        return {str(x).strip().lower() for x in value if str(x).strip()}
-    s = str(value).strip()
-    if not s:
-        return set()
-
-    # split on common separators in CSV fields
-    parts = []
-    for sep in [";", "|", ","]:
-        if sep in s:
-            parts = [p.strip() for p in s.split(sep)]
-            break
-    if not parts:
-        parts = [s]
-
-    return {p.lower() for p in parts if p}
-
-
-def build_reason_text(df, features, rec_idx: int, selected_indices: list[int]) -> str:
-    """
-    Create an explainable reason for a recommended artwork.
-    Uses cosine similarity + shared metadata (if available).
-    """
-    # Similarity to each selected artwork
-    selected_feats = features[selected_indices]  # (m, d)
-    rec_feat = features[int(rec_idx)].reshape(1, -1)  # (1, d)
-
-    sims = cosine_similarity(rec_feat, selected_feats).flatten()  # (m,)
-    best_pos = int(np.argmax(sims))
-    best_sel_idx = int(selected_indices[best_pos])
-    best_score = float(sims[best_pos])
-
-    rec_row = df.iloc[int(rec_idx)]
-    sel_row = df.iloc[best_sel_idx]
-
-    # Build shared metadata highlights (optional)
-    shared_bits = []
-
-    for col, label in [
-        ("subjects", "subjects"),
-        ("materials", "materials"),
-        ("object_type", "type"),
-        ("department", "department"),
-    ]:
-        if col in df.columns:
-            rec_set = _to_set(rec_row.get(col))
-            sel_set = _to_set(sel_row.get(col))
-            shared = list(rec_set.intersection(sel_set))
-            if shared:
-                # show up to 3 items
-                shared_bits.append(f"shared {label}: {', '.join(shared[:3])}")
-
-    # Reference selected artwork label
-    sel_title = str(sel_row.get("title", "")).strip()
-    sel_artist = str(sel_row.get("artist", "")).strip()
-    sel_ref = sel_title if sel_title else "one of your selected artworks"
-    if sel_title and sel_artist:
-        sel_ref = f"“{sel_title}” ({sel_artist})"
-    elif sel_title:
-        sel_ref = f"“{sel_title}”"
-
-    # Final explanation sentence
-    base = f"This artwork was recommended because it is most similar to {sel_ref} (similarity {best_score:.2f})."
-    if shared_bits:
-        base += " It also has " + "; ".join(shared_bits) + "."
-    return base
-
-
-def display_artworks(df, indices, header, reasons=None):
+def display_artworks(df, indices, header):
     st.subheader(header)
     cols = st.columns(3)
 
@@ -164,18 +90,18 @@ def display_artworks(df, indices, header, reasons=None):
         img_file = row.get("image_file")
 
         with cols[i % 3]:
+            # Case 1: valid image URL
             if isinstance(img_url, str) and img_url.strip():
                 st.image(img_url, caption=caption, use_column_width=True)
+
+            # Case 2: valid local file
             elif isinstance(img_file, str) and os.path.exists(img_file):
                 st.image(Image.open(img_file), caption=caption, use_column_width=True)
+
+            # Case 3: nothing available
             else:
                 st.write("🖼️ No image available")
                 st.caption(caption)
-
-            # NEW: show transparency / reason text under the artwork
-            if reasons and int(idx) in reasons:
-                st.caption(f"🧠 {reasons[int(idx)]}")
-
 
 
 st.title("Rijksmuseum Artwork Recommendation")
@@ -230,7 +156,6 @@ if selected_labels:
     if len(rec_indices) == 0:
         st.warning("Not enough data to recommend. Try selecting different artworks.")
     else:
-        reasons = {int(r): build_reason_text(df, merged_final_features, int(r), user_selected_indices) for r in rec_indices} 
-        display_artworks(df, rec_indices, "Recommended artworks", reasons=reasons)
+        display_artworks(df, rec_indices, "Recommended artworks")
 else:
     st.info("Select at least 1 artwork to get recommendations.")
