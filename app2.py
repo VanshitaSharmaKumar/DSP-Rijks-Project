@@ -45,19 +45,58 @@ def build_search_text(df: pd.DataFrame) -> pd.Series:
 #     # sample k without replacement
 #     return np.array(random.sample(flat, k), dtype=int)
 
-def Reccomend_art(merged_final_features, user_selected_indices, k=6):
-    selected = merged_final_features[user_selected_indices]  # (m, d)
-    sims = cosine_similarity(selected, merged_final_features)  # (m, n)
+# def Reccomend_art(merged_final_features, user_selected_indices, k=6):
+#     selected = merged_final_features[user_selected_indices]  # (m, d)
+#     sims = cosine_similarity(selected, merged_final_features)  # (m, n)
+
+#     # Average similarity across all selected artworks
+#     mean_sims = sims.mean(axis=0)  # (n,)
+
+#     # Do not recommend already selected
+#     mean_sims[user_selected_indices] = -1
+
+#     # Top-k most similar, deterministic
+#     rec_idx = np.argsort(mean_sims)[::-1][:k]
+#     return rec_idx.astype(int)
+
+def Reccomend_art(merged_final_features, user_selected_indices, df, artwork_to_exh, lambda_exh=0.25, k=6):
+    selected = merged_final_features[user_selected_indices]
+    sims = cosine_similarity(selected, merged_final_features)
 
     # Average similarity across all selected artworks
-    mean_sims = sims.mean(axis=0)  # (n,)
-
-    # Do not recommend already selected
+    mean_sims = sims.mean(axis=0)
+    
+    # prevent recommending selected artworks
     mean_sims[user_selected_indices] = -1
 
-    # Top-k most similar, deterministic
-    rec_idx = np.argsort(mean_sims)[::-1][:k]
-    return rec_idx.astype(int)
+    selected_uris = df.iloc[user_selected_indices]["id"].tolist()
+    
+    boosts = np.zeros(len(df))
+    for i in range(len(df)):
+        boosts[i] = exhibition_boost(df.iloc[i]["id"], selected_uris, artwork_to_exh, weight=lambda_exh)
+    
+    final_scores = mean_sims + boosts
+    
+    # Sort and remove duplicates + already selected
+    rec_idx = np.argsort(final_scores)[::-1]
+    rec_idx = [i for i in rec_idx if i not in user_selected_indices]  # remove selected
+    rec_idx = list(dict.fromkeys(rec_idx))  # remove duplicates while preserving order
+    
+    return np.array(rec_idx[:k])
+
+def exhibition_boost(candidate_uri, selected_uris, artwork_to_exh, weight=0.25):
+    if candidate_uri not in artwork_to_exh:
+        return 0.0
+
+    shared = 0
+    for uri in selected_uris:
+        shared += len(
+            artwork_to_exh.get(uri, set())
+            & artwork_to_exh[candidate_uri]
+        )
+
+    # log scaling prevents domination
+    return weight * np.log1p(shared)
 
 @st.cache_data
 def load_metadata_df():
@@ -74,7 +113,30 @@ def load_metadata_df():
 def load_features_array():
     return np.load("./DATA/final_features.npy")
 
-def display_artworks(df, indices, header):
+@st.cache_data
+def load_exhibition_df():
+    return pd.read_csv("./DATA/objects_in_exhibtions.csv")
+
+# Exhibition mappings
+@st.cache_data
+def build_exhibition_maps(exh_df):
+    artwork_to_exh_ids = (
+        exh_df
+        .groupby("CollectionObject.uri")["Exhibition.nodeId"]
+        .apply(set)
+        .to_dict()
+    )
+
+    artwork_to_exh_names = (
+        exh_df
+        .groupby("CollectionObject.uri")["Exhibition.enValue"]
+        .apply(lambda x: sorted(set(x.dropna())))
+        .to_dict()
+    )
+
+    return artwork_to_exh_ids, artwork_to_exh_names
+
+def display_artworks(df, indices, header, artwork_to_exh_names=None):
     st.subheader(header)
     cols = st.columns(3)
 
@@ -90,19 +152,20 @@ def display_artworks(df, indices, header):
         img_file = row.get("image_file")
 
         with cols[i % 3]:
-            # Case 1: valid image URL
+            # Display image
             if isinstance(img_url, str) and img_url.strip():
-                st.image(img_url, caption=caption, use_column_width=True)
-
-            # Case 2: valid local file
+                st.image(img_url, caption=caption, width="stretch")
             elif isinstance(img_file, str) and os.path.exists(img_file):
-                st.image(Image.open(img_file), caption=caption, use_column_width=True)
-
-            # Case 3: nothing available
+                st.image(Image.open(img_file), caption=caption, width="stretch")
             else:
                 st.write("🖼️ No image available")
                 st.caption(caption)
 
+            # # Display exhibition info
+            # if artwork_to_exh_names:
+            #     exhibitions = artwork_to_exh_names.get(row["id"], [])
+            #     if exhibitions:
+            #         st.caption("🖼️ Exhibited in: " + "; ".join(exhibitions[:3]))
 
 st.title("Rijksmuseum Artwork Recommendation")
 st.caption("Select a few artworks you like, and I’ll recommend similar works from the Rijksmuseum dataset.")
@@ -111,7 +174,9 @@ df = load_metadata_df()
 df["search_text"] = build_search_text(df)   # add this line
 merged_final_features = load_features_array()
 
-merged_final_features = load_features_array()
+# Add exhibition data to app
+exh_df = load_exhibition_df()
+artwork_to_exh_ids, artwork_to_exh_names = build_exhibition_maps(exh_df)
 
 # Build dropdown labels
 labels = (
@@ -148,14 +213,14 @@ if selected_labels:
     user_selected_indices = [labels.index(x) for x in selected_labels]
 
     # Show selected
-    display_artworks(df, user_selected_indices, "Your selected artworks")
+    display_artworks(df, user_selected_indices, "Your selected artworks", artwork_to_exh_names)
 
     # Recommend
-    rec_indices = Reccomend_art(merged_final_features, user_selected_indices, k=6)
+    rec_indices = Reccomend_art(merged_final_features, user_selected_indices, df, artwork_to_exh_ids, k=6)
 
     if len(rec_indices) == 0:
         st.warning("Not enough data to recommend. Try selecting different artworks.")
     else:
-        display_artworks(df, rec_indices, "Recommended artworks")
+        display_artworks(df, rec_indices, "Recommended artworks", artwork_to_exh_names)
 else:
     st.info("Select at least 1 artwork to get recommendations.")
