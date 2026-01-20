@@ -111,7 +111,7 @@ def load_metadata_df():
 
 @st.cache_data
 def load_features_array():
-    return np.load("./DATA/final_features.npy")
+    return np.load("./DATA/final_multimodal_features.npy")
 
 @st.cache_data
 def load_exhibition_df():
