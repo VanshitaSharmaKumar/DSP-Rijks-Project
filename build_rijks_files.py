@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 import os
 
-RIJKS_CSV = os.path.join("Data Processing", "rijksmuseum_metadata.csv")
+RIJKS_CSV = os.path.join("Data Processing", "/Users/VanshitaS/Desktop/DSP Project P3/DSP-Rijks-Project/Data Processing/rijksmuseum_metadata.csv")
+print(RIJKS_CSV)
 OUT_DIR = "DATA"
 os.makedirs(OUT_DIR, exist_ok=True)
 

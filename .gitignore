@@ -1,3 +1,1 @@
-DATA/final_multimodal_features.npy
-DATA/final_features.npy
-rijksmuseum_images
+.streamlit/secrets.toml
