@@ -10,3 +10,4 @@ huggingface_hub
 torch
 torchvision
 tqdm
+altair<5
