@@ -5,3 +5,8 @@ pandas
 scikit-learn
 scipy
 streamlit
+pillow
+huggingface_hub
+torch
+torchvision
+tqdm
