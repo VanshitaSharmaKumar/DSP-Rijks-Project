@@ -3,6 +3,7 @@ from PIL import Image
 import random
 import numpy as np
 import pandas as pd
+import re
 import os
 from sklearn.metrics.pairwise import cosine_similarity
 from huggingface_hub import hf_hub_download
@@ -134,7 +135,7 @@ def exhibition_boost(candidate_uri, selected_uris, artwork_to_exh, weight=0.25):
     return weight * np.log1p(shared)
 
 
-def Reccomend_art(
+def Recommend_art(
     merged_final_features,
     user_selected_indices,
     df,
@@ -217,38 +218,109 @@ def build_exhibition_maps(exh_df):
 # ----------------------------
 # UI display
 # ----------------------------
-def display_artworks(df, indices, header, reasons=None):
+def clean_field(val, default="Unknown", blacklist=None):
+    """Return default if value is missing, empty, NaN, or in blacklist."""
+    if pd.isna(val) or str(val).strip() == "" or str(val).strip().lower() in (b.lower() for b in (blacklist or [])):
+        return default
+    return str(val).strip()
+
+def build_caption(row):
+    title = clean_field(row.get("title"), "Untitled")
+    artist = clean_field(row.get("artist"), "Unknown", blacklist=["nan", "anoniem"])
+    dating = clean_field(row.get("dating"), "Unknown")
+
+    # Avoid duplicating year if it appears in title
+    year_in_title = re.search(r"\b\d{4}\b", title)
+    if year_in_title:
+        caption = f"**{title}**\nby {artist}"
+    else:
+        caption = f"**{title}**\nby {artist} ({dating})"
+    return caption
+
+def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=True, collection_cols=3, show_add_button=True):
+    """
+    Display artworks in a grid with captions, view details button,
+    and optional add-to-collection button.
+    
+    Parameters:
+    - df: DataFrame with artwork metadata
+    - indices: list of indices to display
+    - header: section header
+    - reasons: optional dict with recommendation reasons
+    - allow_add_to_collection: whether to show add button
+    - collection_cols: number of columns in grid
+    - show_add_button: whether to display add-to-collection button (False for 'My collection')
+    """
     st.subheader(header)
-    cols = st.columns(3)
+    cols = st.columns(collection_cols)
 
     for i, idx in enumerate(indices):
         row = df.iloc[int(idx)]
-
-        title = str(row.get("title", "")).strip()
-        artist = str(row.get("artist", "")).strip()
-        dating = str(row.get("dating", "")).strip()
-        caption = f"{title}\n{artist} — {dating}".strip()
-
+        caption = build_caption(row)
         img_url = row.get("image_url")
         img_file = row.get("image_file")
 
-        with cols[i % 3]:
+        with cols[i % collection_cols]:
+            # Show image
             if isinstance(img_url, str) and img_url.strip():
                 st.image(img_url, caption=caption, use_container_width=True)
             elif isinstance(img_file, str) and os.path.exists(img_file):
-                st.image(Image.open(img_file), caption=caption, use_container_width=True)
+                st.image(img_file, caption=caption, use_container_width=True)
             else:
-                st.write("🖼️ No image available")
+                st.write("No image available")
                 st.caption(caption)
 
+            # Optional reason for recommendation
             reason_text = reasons.get(int(idx)) if reasons else None
 
-            # Popup button (unique key per artwork)
-            if st.button("View details", key=f"details_btn_{header}_{int(idx)}"):
-                open_details_dialog(
-                    row, reason_text=reason_text, key=f"{header}_{int(idx)}"
-                )
+            # Buttons row
+            col1, col2 = st.columns([1, 1])  # tight columns for buttons
 
+            # View details button
+            with col1:
+                if st.button("View details", key=f"details_btn_{header}_{idx}"):
+                    open_details_dialog(row, reason_text=reason_text, key=f"{header}_{idx}")
+
+            # Add to collection button (only if allowed and not in collection)
+            if allow_add_to_collection and show_add_button:
+                with col2:
+                    if idx not in st.session_state.curator_collection:
+                        add_key = f"add_btn_{header}_{idx}"
+                        if st.button("Add to collection", key=add_key):
+                            st.session_state.curator_collection.append(idx)
+                            st.success(f"Added '{build_caption(row)}' to my collection")
+
+# def display_artworks(df, indices, header, reasons=None):
+#     st.subheader(header)
+#     cols = st.columns(3)
+
+#     for i, idx in enumerate(indices):
+#         row = df.iloc[int(idx)]
+
+#         title = str(row.get("title", "")).strip() or "Untitled"
+#         artist = str(row.get("artist", "")).strip() or "Unknown"
+#         dating = str(row.get("dating", "")).strip() or "Unknown"
+#         caption = f"**{title}**\nby {artist} ({dating})"
+
+#         img_url = row.get("image_url")
+#         img_file = row.get("image_file")
+
+#         with cols[i % 3]:
+#             if isinstance(img_url, str) and img_url.strip():
+#                 st.image(img_url, caption=caption, use_container_width=True)
+#             elif isinstance(img_file, str) and os.path.exists(img_file):
+#                 st.image(Image.open(img_file), caption=caption, use_container_width=True)
+#             else:
+#                 st.write("No image available")
+#                 st.caption(caption)
+
+#             reason_text = reasons.get(int(idx)) if reasons else None
+
+#             # Popup button (unique key per artwork)
+#             if st.button("View details", key=f"details_btn_{header}_{int(idx)}"):
+#                 open_details_dialog(
+#                     row, reason_text=reason_text, key=f"{header}_{int(idx)}"
+#                 )
 
 # ----------------------------
 # Main app
@@ -258,24 +330,41 @@ st.caption(
     "Select a few artworks you like, and I’ll recommend similar works from the Rijksmuseum dataset."
 )
 
-df = load_metadata_df()
-df["search_text"] = build_search_text(df)
+# Session state for curator collection
+if "curator_collection" not in st.session_state:
+    st.session_state.curator_collection = []
 
+#df = load_metadata_df()
+#df["search_text"] = build_search_text(df)
+#merged_final_features = load_features_array()
+
+df = load_metadata_df()
+
+# Identify duplicates
+dup_mask = df.duplicated(subset=["title", "artist", "dating"], keep="first")
+
+# Drop duplicates from df
+df = df[~dup_mask].reset_index(drop=True)
+
+# Drop corresponding rows from features array
 merged_final_features = load_features_array()
+merged_final_features = merged_final_features[~dup_mask.values]
 
 # Add exhibition data to app
 exh_df = load_exhibition_df()
 artwork_to_exh_ids, artwork_to_exh_names = build_exhibition_maps(exh_df)
 
-# Build dropdown labels
-labels = (
-    df["title"].fillna("").astype(str)
-    + " — "
-    + df["artist"].fillna("").astype(str)
-    + " ("
-    + df["dating"].fillna("").astype(str)
-    + ")"
-).tolist()
+# Build search text for keyword filtering
+df["search_text"] = build_search_text(df)
+
+# Build dropdown labels using cleaned captions
+dropdown_labels = [
+    f"{clean_field(df.iloc[i].get('title'), 'Untitled')} by "
+    f"{clean_field(df.iloc[i].get('artist'), 'Unknown', blacklist=['nan', 'anoniem'])} "
+    f"({clean_field(df.iloc[i].get('dating'), 'Unknown')})"
+    for i in range(len(df))
+]
+caption_to_index = {dropdown_labels[i]: i for i in range(len(df))}
 
 # Keyword search input
 query = st.text_input(
@@ -288,15 +377,14 @@ if query:
     keywords = query.split()  # split by spaces into separate words
     mask = pd.Series(True, index=df.index)
     
-    # Require all keywords to match somewhere in search_text
     for word in keywords:
         mask &= df["search_text"].str.contains(word, regex=False, na=False)
     
     filtered_indices = df.index[mask].tolist()
-    filtered_labels = [labels[i] for i in filtered_indices]
+    filtered_labels = [dropdown_labels[i] for i in filtered_indices]
     st.caption(f"Matches: {len(filtered_labels)}")
 else:
-    filtered_labels = labels
+    filtered_labels = dropdown_labels
 
 selected_labels = st.multiselect(
     "Pick 1–3 artworks you like",
@@ -305,19 +393,82 @@ selected_labels = st.multiselect(
 )
 
 if selected_labels:
-    user_selected_indices = [labels.index(x) for x in selected_labels]
+    # Map captions back to indices
+    user_selected_indices = [caption_to_index[label] for label in selected_labels]
 
-    # Show selected
+    # Show selected artworks (no add-to-collection for already selected)
     display_artworks(df, user_selected_indices, "Your selected artworks", artwork_to_exh_names)
 
-    # Recommend
-    rec_indices = Reccomend_art(
+    # Recommend artworks
+    rec_indices = Recommend_art(
         merged_final_features, user_selected_indices, df, artwork_to_exh_ids, k=6
     )
 
     if len(rec_indices) == 0:
         st.warning("Not enough data to recommend. Try selecting different artworks.")
     else:
-        display_artworks(df, rec_indices, "Recommended artworks", artwork_to_exh_names)
+        # Show recommended artworks with add-to-collection option
+        display_artworks(
+            df, rec_indices, "Recommended artworks", artwork_to_exh_names, allow_add_to_collection=True
+        )
 else:
     st.info("Select at least 1 artwork to get recommendations.")
+
+# --- Always show curator collection ---
+if st.session_state.curator_collection:
+    display_artworks(df, st.session_state.curator_collection, "My collection", collection_cols=4, allow_add_to_collection=False, show_add_button=False)
+
+# # Build dropdown labels
+# labels = (
+#     df["title"].fillna("").astype(str)
+#     + " — "
+#     + df["artist"].fillna("").astype(str)
+#     + " ("
+#     + df["dating"].fillna("").astype(str)
+#     + ")"
+# ).tolist()
+
+# # Keyword search input
+# query = st.text_input(
+#     "Search artworks (title/description/subjects/etc.)",
+#     placeholder="Try: flower, portrait, landscape, japan, vase...",
+# ).strip().lower()
+
+# # Filter dropdown options based on query
+# if query:
+#     keywords = query.split()  # split by spaces into separate words
+#     mask = pd.Series(True, index=df.index)
+    
+#     # Require all keywords to match somewhere in search_text
+#     for word in keywords:
+#         mask &= df["search_text"].str.contains(word, regex=False, na=False)
+    
+#     filtered_indices = df.index[mask].tolist()
+#     filtered_labels = [labels[i] for i in filtered_indices]
+#     st.caption(f"Matches: {len(filtered_labels)}")
+# else:
+#     filtered_labels = labels
+
+# selected_labels = st.multiselect(
+#     "Pick 1–3 artworks you like",
+#     options=filtered_labels,
+#     default=[],
+# )
+
+# if selected_labels:
+#     user_selected_indices = [labels.index(x) for x in selected_labels]
+
+#     # Show selected
+#     display_artworks(df, user_selected_indices, "Your selected artworks", artwork_to_exh_names)
+
+#     # Recommend
+#     rec_indices = Reccomend_art(
+#         merged_final_features, user_selected_indices, df, artwork_to_exh_ids, k=6
+#     )
+
+#     if len(rec_indices) == 0:
+#         st.warning("Not enough data to recommend. Try selecting different artworks.")
+#     else:
+#         display_artworks(df, rec_indices, "Recommended artworks", artwork_to_exh_names)
+# else:
+#     st.info("Select at least 1 artwork to get recommendations.")
