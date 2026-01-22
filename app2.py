@@ -8,11 +8,6 @@ import os
 from sklearn.metrics.pairwise import cosine_similarity
 from huggingface_hub import hf_hub_download
 
-import streamlit as st
-st.write("✅ Boot: app2.py started")
-
-import time
-st.write("✅ Boot: imports done")
 
 st.set_page_config(layout="wide")
 
