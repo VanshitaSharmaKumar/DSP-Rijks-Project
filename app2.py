@@ -82,11 +82,15 @@ def open_details_dialog(row, reason_text=None, key="details"):
             st.divider()
 
             # AI Transparency
-            st.markdown("### AI Transparency")
-            st.write(
-                reason_text
-                or "This artwork was recommended because it is similar to your selected artwork(s) based on cosine similarity between feature vectors."
-            )
+            if reason_text:
+                st.markdown("### AI Transparency")
+                st.write(reason_text)
+
+            #st.markdown("### AI Transparency")
+            #st.write(
+            #    reason_text
+            #   or "This artwork was recommended because it is similar to your selected artwork(s) based on cosine similarity between feature vectors."
+            #)
 
     _dialog()
 
@@ -169,6 +173,72 @@ def Recommend_art(
 
     return np.array(rec_idx[:k])
 
+
+def _to_set(value) -> set:
+    """Convert metadata cell to a set of tokens (robust to NaN, lists, etc.)."""
+    if value is None:
+        return set()
+    if isinstance(value, float) and np.isnan(value):
+        return set()
+    if isinstance(value, (set, list, tuple)):
+        return {str(x).strip().lower() for x in value if str(x).strip()}
+
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return set()
+
+    # split on common separators used in CSV fields
+    parts = re.split(r"[;|,]", s)
+    return {p.strip().lower() for p in parts if p.strip()}
+
+
+def build_reason_text(df, features, rec_idx: int, selected_indices: list[int]) -> str:
+    """
+    Create an explainable reason for a recommended artwork.
+    Uses cosine similarity + shared metadata (if available).
+    """
+    selected_feats = features[selected_indices]              # (m, d)
+    rec_feat = features[int(rec_idx)].reshape(1, -1)         # (1, d)
+
+    sims = cosine_similarity(rec_feat, selected_feats).flatten()  # (m,)
+    best_pos = int(np.argmax(sims))
+    best_sel_idx = int(selected_indices[best_pos])
+    best_score = float(sims[best_pos])
+
+    rec_row = df.iloc[int(rec_idx)]
+    sel_row = df.iloc[int(best_sel_idx)]
+
+    shared_bits = []
+    for col, label in [
+        ("subjects", "subjects"),
+        ("materials", "materials"),
+        ("object_type", "object type"),
+        ("department", "museum department"),
+    ]:
+        if col in df.columns:
+            rec_set = _to_set(rec_row.get(col))
+            sel_set = _to_set(sel_row.get(col))
+            shared = sorted(rec_set.intersection(sel_set))  # ✅ deterministic order
+            if shared:
+                shared_bits.append(f"shared {label}: {', '.join(shared[:3])}")
+
+    sel_title = str(sel_row.get("title", "")).strip()
+    sel_artist = str(sel_row.get("artist", "")).strip()
+
+    if sel_title and sel_artist:
+        sel_ref = f"“{sel_title}” ({sel_artist})"
+    elif sel_title:
+        sel_ref = f"“{sel_title}”"
+    else:
+        sel_ref = "one of your selected artworks"
+
+    base = (
+        f"This artwork was recommended because it is most similar to {sel_ref} "
+        f"(Similarity {best_score:.2f})."
+    )
+    if shared_bits:
+        base += " It also has " + "; ".join(shared_bits) + "."
+    return base
 
 # ----------------------------
 # Data loading
@@ -290,37 +360,6 @@ def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=
                             st.session_state.curator_collection.append(idx)
                             st.success(f"Added '{build_caption(row)}' to my collection")
 
-# def display_artworks(df, indices, header, reasons=None):
-#     st.subheader(header)
-#     cols = st.columns(3)
-
-#     for i, idx in enumerate(indices):
-#         row = df.iloc[int(idx)]
-
-#         title = str(row.get("title", "")).strip() or "Untitled"
-#         artist = str(row.get("artist", "")).strip() or "Unknown"
-#         dating = str(row.get("dating", "")).strip() or "Unknown"
-#         caption = f"**{title}**\nby {artist} ({dating})"
-
-#         img_url = row.get("image_url")
-#         img_file = row.get("image_file")
-
-#         with cols[i % 3]:
-#             if isinstance(img_url, str) and img_url.strip():
-#                 st.image(img_url, caption=caption, use_container_width=True)
-#             elif isinstance(img_file, str) and os.path.exists(img_file):
-#                 st.image(Image.open(img_file), caption=caption, use_container_width=True)
-#             else:
-#                 st.write("No image available")
-#                 st.caption(caption)
-
-#             reason_text = reasons.get(int(idx)) if reasons else None
-
-#             # Popup button (unique key per artwork)
-#             if st.button("View details", key=f"details_btn_{header}_{int(idx)}"):
-#                 open_details_dialog(
-#                     row, reason_text=reason_text, key=f"{header}_{int(idx)}"
-#                 )
 
 # ----------------------------
 # Main app
@@ -396,21 +435,30 @@ if selected_labels:
     # Map captions back to indices
     user_selected_indices = [caption_to_index[label] for label in selected_labels]
 
-    # Show selected artworks (no add-to-collection for already selected)
-    display_artworks(df, user_selected_indices, "Your selected artworks", artwork_to_exh_names)
+    # Show selected artworks (no reasons needed)
+    display_artworks(df, user_selected_indices, "Your selected artworks")
 
-    # Recommend artworks
     rec_indices = Recommend_art(
         merged_final_features, user_selected_indices, df, artwork_to_exh_ids, k=6
     )
 
+    reasons = {}  # always defined
+
     if len(rec_indices) == 0:
         st.warning("Not enough data to recommend. Try selecting different artworks.")
     else:
-        # Show recommended artworks with add-to-collection option
-        display_artworks(
-            df, rec_indices, "Recommended artworks", artwork_to_exh_names, allow_add_to_collection=True
-        )
+        reasons = {
+            int(idx): build_reason_text(df, merged_final_features, int(idx), user_selected_indices)
+            for idx in rec_indices
+        }
+
+    display_artworks(
+        df,
+        rec_indices,
+        "Recommended artworks",
+        reasons=reasons,
+        allow_add_to_collection=True
+    )
 else:
     st.info("Select at least 1 artwork to get recommendations.")
 
@@ -418,57 +466,3 @@ else:
 if st.session_state.curator_collection:
     display_artworks(df, st.session_state.curator_collection, "My collection", collection_cols=4, allow_add_to_collection=False, show_add_button=False)
 
-# # Build dropdown labels
-# labels = (
-#     df["title"].fillna("").astype(str)
-#     + " — "
-#     + df["artist"].fillna("").astype(str)
-#     + " ("
-#     + df["dating"].fillna("").astype(str)
-#     + ")"
-# ).tolist()
-
-# # Keyword search input
-# query = st.text_input(
-#     "Search artworks (title/description/subjects/etc.)",
-#     placeholder="Try: flower, portrait, landscape, japan, vase...",
-# ).strip().lower()
-
-# # Filter dropdown options based on query
-# if query:
-#     keywords = query.split()  # split by spaces into separate words
-#     mask = pd.Series(True, index=df.index)
-    
-#     # Require all keywords to match somewhere in search_text
-#     for word in keywords:
-#         mask &= df["search_text"].str.contains(word, regex=False, na=False)
-    
-#     filtered_indices = df.index[mask].tolist()
-#     filtered_labels = [labels[i] for i in filtered_indices]
-#     st.caption(f"Matches: {len(filtered_labels)}")
-# else:
-#     filtered_labels = labels
-
-# selected_labels = st.multiselect(
-#     "Pick 1–3 artworks you like",
-#     options=filtered_labels,
-#     default=[],
-# )
-
-# if selected_labels:
-#     user_selected_indices = [labels.index(x) for x in selected_labels]
-
-#     # Show selected
-#     display_artworks(df, user_selected_indices, "Your selected artworks", artwork_to_exh_names)
-
-#     # Recommend
-#     rec_indices = Reccomend_art(
-#         merged_final_features, user_selected_indices, df, artwork_to_exh_ids, k=6
-#     )
-
-#     if len(rec_indices) == 0:
-#         st.warning("Not enough data to recommend. Try selecting different artworks.")
-#     else:
-#         display_artworks(df, rec_indices, "Recommended artworks", artwork_to_exh_names)
-# else:
-#     st.info("Select at least 1 artwork to get recommendations.")
