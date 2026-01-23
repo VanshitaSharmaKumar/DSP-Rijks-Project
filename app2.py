@@ -297,8 +297,8 @@ def build_caption(row):
         caption = f"**{title}**\nby {artist} ({dating})"
     return caption
 
-def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=True, collection_cols=3):
-    # 1. Targeted CSS
+def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=True, collection_cols=3, is_collection_view=False):
+    # 1. Targeted CSS (Keep your existing CSS here)
     st.markdown("""
         <style>
         div#gallery-container [data-testid="stVerticalBlockBorderWrapper"] {
@@ -329,74 +329,34 @@ def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=
         
         with cols[i % collection_cols]:
             with st.container(border=True):
-                # Image
                 if isinstance(img_url, str) and img_url.strip():
                     st.image(img_url, use_container_width=True)
                 else:
                     st.info("No image available")
                 
-                # Title/Caption
                 st.markdown(caption)
 
-                # Buttons
                 b1, b2 = st.columns(2)
                 with b1:
-                    # FIX 1: View Details Logic
                     if st.button("Details", key=f"det_{header}_{idx}", use_container_width=True):
                         open_details_dialog(row, reason_text=reason_text, key=f"dlg_{header}_{idx}")
                 
                 with b2:
-                    # FIX 2: Add to Collection Logic
-                    if allow_add_to_collection:
-                        # Check if already added to disable button
+                    # Logic for Remove Button (Only in Collection View)
+                    if is_collection_view:
+                        if st.button("Remove", key=f"rem_{header}_{idx}", use_container_width=True, type="secondary"):
+                            st.session_state.curator_collection.remove(idx)
+                            st.rerun()
+                    
+                    # Logic for Add Button (Everywhere else)
+                    elif allow_add_to_collection:
                         is_added = idx in st.session_state.curator_collection
                         if st.button("Add", key=f"add_{header}_{idx}", use_container_width=True, disabled=is_added):
                             if idx not in st.session_state.curator_collection:
                                 st.session_state.curator_collection.append(idx)
-                                st.rerun() # Refresh to show success/update "My Collection"
+                                st.rerun()
     
     st.markdown('</div>', unsafe_allow_html=True)
-
-# def display_artworks(df, indices, header, reasons=None, allow_add_to_collection=True, collection_cols=3, show_add_button=True):
-#     st.subheader(header)
-#     cols = st.columns(collection_cols)
-
-#     for i, idx in enumerate(indices):
-#         row = df.iloc[int(idx)]
-#         caption = build_caption(row)
-#         img_url = row.get("image_url")
-#         img_file = row.get("image_file")
-
-#         with cols[i % collection_cols]:
-#             # Show image
-#             if isinstance(img_url, str) and img_url.strip():
-#                 st.image(img_url, caption=caption, use_container_width=True)
-#             elif isinstance(img_file, str) and os.path.exists(img_file):
-#                 st.image(img_file, caption=caption, use_container_width=True)
-#             else:
-#                 st.write("No image available")
-#                 st.caption(caption)
-
-#             # Optional reason for recommendation
-#             reason_text = reasons.get(int(idx)) if reasons else None
-
-#             # Buttons row
-#             col1, col2 = st.columns([1, 1])  # tight columns for buttons
-
-#             # View details button
-#             with col1:
-#                 if st.button("View details", key=f"details_btn_{header}_{idx}"):
-#                     open_details_dialog(row, reason_text=reason_text, key=f"{header}_{idx}")
-
-#             # Add to collection button (only if allowed and not in collection)
-#             if allow_add_to_collection and show_add_button:
-#                 with col2:
-#                     if idx not in st.session_state.curator_collection:
-#                         add_key = f"add_btn_{header}_{idx}"
-#                         if st.button("Add to collection", key=add_key):
-#                             st.session_state.curator_collection.append(idx)
-#                             st.success(f"Added '{build_caption(row)}' to my collection")
-
 
 # ----------------------------
 # Main app
@@ -505,5 +465,11 @@ else:
 
 # --- Always show curator collection ---
 if st.session_state.curator_collection:
-    display_artworks(df, st.session_state.curator_collection, "My collection", collection_cols=4, allow_add_to_collection=False)
-
+    display_artworks(
+        df, 
+        st.session_state.curator_collection, 
+        "My collection", 
+        collection_cols=4, 
+        allow_add_to_collection=False,
+        is_collection_view=True
+    )
